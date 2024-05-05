@@ -1,0 +1,8 @@
+/tiny-imagenet-200
+/__pycache__
+/imagenette2
+*.pth
+/Learn
+/MNIST
+/data
+archive.zip
