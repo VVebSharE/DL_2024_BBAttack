@@ -1,5 +1,1 @@
-we require a classifying model: minist or imagenet
-model should have following properties:
-    - input shape
-    - output shape
-    - number of classes
+download imagenett2 dataset : https://s3.amazonaws.com/fast-ai-imageclas/imagenette2.tgz
