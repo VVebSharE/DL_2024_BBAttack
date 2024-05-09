@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
+import os
 
 device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 torch.cuda.set_device(device)
@@ -10,7 +11,7 @@ class AdversarialAttack:
         if(mini_batch_size%2!=0):
             raise ValueError("mini_batch_size should be even")
         
-        
+
 
 
         self.model = model
@@ -155,6 +156,17 @@ def toImage(tensor):
     # Display the image
     return image
 
+def saveImages(images_folder,samples,n=100):
+    # Saving perturbed images
+
+    if(not os.path.exists(images_folder)):
+        os.makedirs(images_folder)
+
+    for i in range(n):
+        image = toImage(samples[i])
+        image.save(os.path.join(images_folder,f"class1_{i}.png"))
+
+
 
 if(__name__=="__main__"):
     from PretrainedModels.imagenet import ModelOptions, get_pre_trained_model
@@ -194,9 +206,21 @@ if(__name__=="__main__"):
 
     perturbed_source_samples = source_samples - perturbation
 
+
+
+
+    # Saving perturbed images
+    saveImages("perturbed_images",perturbed_source_samples,n)
+    #also saving actual images
+    saveImages("actual_images",source_samples,n)
+
+
     # save perturbation
     image = toImage(perturbation)
     image.save("perturbation.png")
+
+    #save perturbation as tensor
+    torch.save(perturbation,"perturbation.pt")
 
 
 

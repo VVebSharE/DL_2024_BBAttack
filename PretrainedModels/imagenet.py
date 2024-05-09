@@ -12,7 +12,7 @@ class ModelOptions(Enum):
     RESNET18 = models.resnet18
     RESNET34 = models.resnet34
     RESNET50 = models.resnet50
-    GOOGLENET = models.googlenet
+    # GOOGLENET = models.googlenet
 
 class ModelWrapper(torch.nn.Module):
     def __init__(self, model: torch.nn.Module)->None:
@@ -31,7 +31,8 @@ def get_pre_trained_model(model_option: ModelOptions)->Tuple[torch.nn.Module, tr
     model = ModelWrapper(model)
     model.eval()
 
-    transform=transforms.Compose([  transforms.Resize((256,256), interpolation=transforms.InterpolationMode.BILINEAR),
+    transform=transforms.Compose([  
+        transforms.Resize((256,256), interpolation=transforms.InterpolationMode.BILINEAR),
                                     transforms.CenterCrop(224),
                                     transforms.ToTensor()])
 
