@@ -9,3 +9,6 @@ archive.zip
 /perturbed_images
 /actual_images
 *.pyc
+/Pi
+/Perturbations
+/runs

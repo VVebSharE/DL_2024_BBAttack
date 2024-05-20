@@ -3,13 +3,15 @@ import torch.nn.functional as F
 import torchvision.transforms as transforms
 from torch.utils.tensorboard import SummaryWriter
 import os
-from enum import Enum
-
-writer = SummaryWriter(log_dir='runs/experiment1')
+from PretrainedModels.imagenet import ModelOptions, get_pre_trained_model
+from PretrainedModels.imagenet_data import ImageNetT2Dataset, idx2label
+from torch.utils.data import DataLoader
 
 import datetime
 current_datetime = datetime.datetime.now()
 current_datetime = current_datetime.strftime("%Y-%m-%d__%H:%M:%S")
+
+writer = SummaryWriter(log_dir='runs/experiment1')
 
 device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu")
 torch.cuda.set_device(device)
@@ -19,7 +21,7 @@ class AdversarialAttack:
         if(mini_batch_size%2!=0):
             raise ValueError("mini_batch_size should be even")
         
-        self.norm = 30
+
         self.perturbation_norm=perturbation_norm
 
         self.model = model
@@ -37,19 +39,22 @@ class AdversarialAttack:
             param.requires_grad = False
         
 
-    def generate_perturbation(self, source_dataloader, non_source_dataloader, target:int,itr=None,save_pi=None):
+    def generate_perturbation(self, seed, non_source_dataset, source_target:int, non_source_target:int,itr=None):
         # source_target is the label we want mdoel to predict after attack, non_source_target is actual label of non_source_samples
 
-        SsTarget = torch.full((self.mini_batch_size,), target, dtype=torch.long).to(device)
-        SoTarget = torch.full((self.mini_batch_size,), target, dtype=torch.long).to(device)
+        SsTarget = torch.full((self.mini_batch_size//2,), source_target, dtype=torch.long).to(device)
+        SoTarget = torch.full((self.mini_batch_size//2,), non_source_target, dtype=torch.long).to(device)
 
-        samples,labels = next(iter(source_dataloader))
-
-
-        p = torch.zeros_like(samples[0]).to(device)  # Initialize perturbation vector
+        p = torch.zeros_like(source_samples[0]).to(device)  # Initialize perturbation vector
         v = torch.zeros_like(p).to(device)  # Initialize velocity vector
         w = torch.zeros_like(p).to(device)  # Initialize squared velocity vector
         t = 0  # Initialize time step
+
+
+        # source_samples=source_samples.to(device)
+        # source_samples of one image only
+        source_samples = torch.zeros_like(p).unsqueeze(0).to(device)
+        non_source_samples= non_source_samples.to(device)
 
         beta1 = 0.9
         beta2 = 0.999
@@ -57,10 +62,24 @@ class AdversarialAttack:
         lr = 0.01
 
         while True:
+            # Check fooling ratio
+            fooling_ratio = self.compute_fooling_ratio(source_samples,non_source_samples, p, source_target)
+            if fooling_ratio >= self.fooling_ratio:
+                if(itr == None):
+                    break
+                else:
+                    if(t>=itr):
+                        break
+            
+            print("fooling ratio: ",fooling_ratio)
+            print(torch.cuda.memory_allocated(device)/1e9,"GB")
+            print()
+
+
 
             # Randomly select mini-batches
-            Ss=next(iter(source_dataloader))[0].to(device)
-            So=next(iter(non_source_dataloader))[0].to(device)
+            Ss = source_samples
+            So = non_source_samples[torch.randperm(len(non_source_samples))[:1-self.mini_batch_size]]
 
 
             # print("Min:",Ss.min(),So.min())
@@ -77,7 +96,6 @@ class AdversarialAttack:
 
 
             t += 1
-
 
             SsLoss = F.cross_entropy(self.model(Ss), SsTarget)
             SoLoss = F.cross_entropy(self.model(So), SoTarget)
@@ -110,7 +128,7 @@ class AdversarialAttack:
             w = beta2 * w + (1 - beta2) * (xi_t * xi_t)
 
             # # Compute perturbation update
-            p_update = ((1 - beta2 ** t) ** 0.5)/ (1 - beta1 ** t) * ( v / (torch.sqrt(w) + 1e-8))
+            p_update = ((1 - beta2 ** t) ** 0.5)/ (1 - beta1 ** t) * v / (torch.sqrt(w) + 1e-8)
 
             # # infinity norm of p
             p_inf = torch.norm(p_update,p=float('inf'))
@@ -122,25 +140,11 @@ class AdversarialAttack:
 
             # p = self.lp_ball_projection(p)
 
-            # Check fooling ratio
-            fooling_ratio = self.compute_fooling_ratio(Ss,So, p, target)
-            if fooling_ratio >= self.fooling_ratio:
-                if(itr == None):
-                    break
-                else:
-                    if(t>=itr):
-                        break
+            # # Clip perturbation vector
+            # p = torch.clamp(p, self.perturbation_min, self.perturbation_max)
 
-            
-            print("fooling ratio: ",fooling_ratio)
-            print(torch.cuda.memory_allocated(device)/1e9,"GB")
-            print()
-
-            if(save_pi is not None):
-                # save the p in save_pi dir
-                pi=p.cpu()
-
-                saveImages(save_pi,[pi],t)
+            # # Apply projection operator
+            # p = self.project_perturbation(p)
 
             # free memory
             del Ss, So ,
@@ -163,17 +167,9 @@ class AdversarialAttack:
 
             return fooling_ratio
 
-    
-    def lp_ball_projection(self,p,type="two"):
-        if(type=='inf'):
-            return torch.sign(p) * torch.min(torch.abs(p), torch.tensor(self.norm))
-        elif(type=="two"):
-            norm_p = torch.norm(p, p=2)
-            scale =  torch.min(torch.tensor(1.0), self.norm / norm_p)
-            return p * scale
-        else:
-            NotImplementedError
-
+    def lp_ball_projection(self,p):
+        # sign(p)*min(abs(p),n)
+        return torch.sign(p) * torch.min(torch.abs(p), self.perturbation_norm)
 
 from PIL import Image
 def toImage(tensor):
@@ -192,64 +188,90 @@ def toImage(tensor):
     # Display the image
     return image
 
-def saveImages(images_folder,samples,t=""):
-    "t is for tag"
-    # Saving perturbed images
+def saveImages(images_folder,samples,n=100):
 
     if(not os.path.exists(images_folder)):
         os.makedirs(images_folder)
 
-    for i in range(len(samples)):
+    for i in range(n):
         image = toImage(samples[i])
-        image.save(os.path.join(images_folder,f"{t}class1_{i}.png"))
+        image.save(os.path.join(images_folder,f"class1_{i}.png"))
+
+def savePerturbation(perturbation ,target=None):
+    name = "Perturbations/"+current_datetime 
+
+    if(target is not None):
+        name += "__" + idx2label[target]
+
+    image = toImage(perturbation)
+    image.save(name+".png")
+
+    #save perturbation as tensor
+    torch.save(perturbation,name+".pt")
 
 
 
 if(__name__=="__main__"):
-    from PretrainedModels.imagenet import ModelOptions, get_pre_trained_model
-    from PretrainedModels.imagenet_data import ImageNetT2Dataset
-    from torch.utils.data import DataLoader
-    import torch
 
-    model, transform = get_pre_trained_model(ModelOptions.RESNET152)
+    model, transform = get_pre_trained_model(ModelOptions.RESNET18)
 
     train_dir = 'imagenette2/train'
 
-    class1_dataset = ImageNetT2Dataset(train_dir,transform=transform)
+    class1_dataset = ImageNetT2Dataset(train_dir,transform=transform,which_class=0)
+
     class2_dataset = ImageNetT2Dataset(train_dir,transform=transform)
 
-    n=100
+    print(class1_dataset.__len__())
+    print(class2_dataset.__len__())
 
-    class1_dataset = torch.utils.data.Subset(class1_dataset,range(min(n,class1_dataset.__len__())))
-    class2_dataset = torch.utils.data.Subset(class2_dataset,range(min(n,class2_dataset.__len__())))
-
-    print("class1:",len(class1_dataset))
-    print("class2:",len(class2_dataset))
-
+    n=10000
     mini_batch_size=20 #make even no.
     # n samples from each class
 
-    source_dataloader = DataLoader(class1_dataset,batch_size=mini_batch_size,shuffle=True,num_workers=1)
-    non_source_dataloader = DataLoader(class2_dataset,batch_size=mini_batch_size,shuffle=True,num_workers=1)
+    seed = torch.stack([class1_dataset[i][0] for i in range(1)])
 
+    non_source_dataset = torch.utils.data.Subset(class2_dataset,range(min(n,class2_dataset.__len__())))
 
-    attack = AdversarialAttack(model,mini_batch_size=mini_batch_size,fooling_ratio=1)
+    non_source_dataloader = DataLoader(non_source_dataset, batch_size=mini_batch_size-1, shuffle=True, num_workers=1)
+
+    attack = AdversarialAttack(model,mini_batch_size=mini_batch_size)
+
+    targets=[3,4,8,35,55,62,72,84,134,980,453,502,562,571,574,579,677,679,680,696,738,996,987,975,973]
 
     # target = source_target
-    target = torch.tensor(94)
+    for t in targets:
 
-    perturbation = attack.generate_perturbation(source_dataloader, non_source_dataloader, target,itr=150,save_pi="./Pi")
+        target = torch.tensor(t)
 
-    perturbation = perturbation.cpu()
+        # for explaination 
+        non_source_target = target
+        
+        perturbation = attack.generate_perturbation(seed, non_source_dataloader, target,itr=1000) 
 
-    # perturbed_source_samples = source_samples - perturbation
-    # saveImages("perturbed_images",perturbed_source_samples,n)
-    # saveImages("actual_images",source_samples,n)
+        perturbation = perturbation.cpu()
+
+        savePerturbation(perturbation,target)
 
 
-    # # save perturbation
-    image = toImage(perturbation)
-    image.save("perturbation.png")
-    # torch.save(perturbation,"perturbation.pt")
+# return a list of image paths predicted as cls
+def cls_predicted_images(cls,cls_dataloader,model,limit=100,):
+    cls_images=[]
+
+    if(torch.cuda.is_available()):
+        model.to(device)
+
+    with torch.no_grad():
+        for i, (images, labels, paths) in enumerate(cls_dataloader):
+            images = images.to(model.device)
+
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            for j in range(len(predicted)):
+                if predicted[j]==cls:
+                    cls_images.append(paths[j])
+                    if len(cls_images)==limit:
+                        return cls_images
+    
+    return cls_images
 
  

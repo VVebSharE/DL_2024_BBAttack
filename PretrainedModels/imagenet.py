@@ -12,6 +12,10 @@ class ModelOptions(Enum):
     RESNET18 = models.resnet18
     RESNET34 = models.resnet34
     RESNET50 = models.resnet50
+    RESNET152 = models.resnet152
+    vit = models.vit_b_16
+    vit_l = models.vit_l_16
+    MOBILENET = models.mobilenet_v3_large
     # GOOGLENET = models.googlenet
 
 class ModelWrapper(torch.nn.Module):
