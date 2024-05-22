@@ -4,6 +4,10 @@ import torchvision.transforms as transforms
 from torch.utils.tensorboard import SummaryWriter
 import os
 from enum import Enum
+from PretrainedModels.imagenet import ModelOptions, get_pre_trained_model
+from PretrainedModels.imagenet_data import ImageNetT2Dataset, idx2label
+from torch.utils.data import DataLoader
+import torch
 
 writer = SummaryWriter(log_dir='runs/experiment1')
 
@@ -19,7 +23,7 @@ class AdversarialAttack:
         if(mini_batch_size%2!=0):
             raise ValueError("mini_batch_size should be even")
         
-        self.norm = 30
+        self.norm = 15
         self.perturbation_norm=perturbation_norm
 
         self.model = model
@@ -41,7 +45,6 @@ class AdversarialAttack:
         # source_target is the label we want mdoel to predict after attack, non_source_target is actual label of non_source_samples
 
         SsTarget = torch.full((self.mini_batch_size,), target, dtype=torch.long).to(device)
-        SoTarget = torch.full((self.mini_batch_size,), target, dtype=torch.long).to(device)
 
         samples,labels = next(iter(source_dataloader))
 
@@ -60,7 +63,10 @@ class AdversarialAttack:
 
             # Randomly select mini-batches
             Ss=next(iter(source_dataloader))[0].to(device)
-            So=next(iter(non_source_dataloader))[0].to(device)
+            So,SoTarget=next(iter(non_source_dataloader))
+
+            So = So.to(device)
+            SoTarget = SoTarget.to(device)
 
 
             # print("Min:",Ss.min(),So.min())
@@ -72,8 +78,8 @@ class AdversarialAttack:
             print(p.shape)
             print("perturbation norm:",torch.norm(p,p=2))
             
-            Ss = torch.clamp(Ss - p, self.perturbation_min, self.perturbation_max)
-            So = torch.clamp(So - p, self.perturbation_min, self.perturbation_max)
+            Ss = torch.clamp(Ss + p, self.perturbation_min, self.perturbation_max)
+            So = torch.clamp(So + p, self.perturbation_min, self.perturbation_max)
 
 
             t += 1
@@ -118,11 +124,11 @@ class AdversarialAttack:
             # print(p_inf)
 
             # # Update perturbation vector
-            p = p + lr * p_update/p_inf
+            p = p - lr * p_update/p_inf
 
             # p = self.lp_ball_projection(p)
 
-            # Check fooling ratio
+            # Check fooling ratio for source class
             fooling_ratio = self.compute_fooling_ratio(Ss,So, p, target)
             if fooling_ratio >= self.fooling_ratio:
                 if(itr == None):
@@ -153,8 +159,8 @@ class AdversarialAttack:
     def compute_fooling_ratio(self, source_samples,non_source_samples, perturbation, target):
         # percentage of source_smaples predicted as target class instances
         with torch.no_grad():
-            source_predictions = torch.argmax(self.model(source_samples - perturbation), dim=1)
-            non_source_predictions = torch.argmax(self.model(non_source_samples - perturbation), dim=1)
+            source_predictions = torch.argmax(self.model(source_samples + perturbation), dim=1)
+            non_source_predictions = torch.argmax(self.model(non_source_samples + perturbation), dim=1)
             target= torch.full((source_predictions.size(0),), target, dtype=torch.long).to(device)
             print("source_predictions:",source_predictions)
             print("non_source_predictions:",non_source_predictions)
@@ -205,51 +211,96 @@ def saveImages(images_folder,samples,t=""):
 
 
 
+def attack_on_differnet_models():
+   models = [
+         ModelOptions.RESNET152,
+         ModelOptions.RESNET50,
+         ModelOptions.RESNET18,
+         ModelOptions.VGG16,
+         ModelOptions.VGG19,
+         ModelOptions.ALEXNET,
+         ModelOptions.vit,
+         ModelOptions.vit_l,
+   ]
+
+   targets = [270,285,289,322,340,390,441,677]
+
+   for i in range(8):
+         model, transform = get_pre_trained_model(models[i])
+    
+         train_dir = 'imagenette2/train'
+
+         mini_batch_size=20 
+         attack = AdversarialAttack(model,mini_batch_size=mini_batch_size,fooling_ratio=1)
+    
+         class1_dataset = ImageNetT2Dataset(train_dir,transform=transform,which_class = i)
+         class2_dataset = ImageNetT2Dataset(train_dir,transform=transform,not_class = i)
+    
+         n=10000000
+    
+         class1_dataset = torch.utils.data.Subset(class1_dataset,range(min(n,class1_dataset.__len__())))
+         class2_dataset = torch.utils.data.Subset(class2_dataset,range(min(n,class2_dataset.__len__())))
+    
+    
+         source_dataloader = DataLoader(class1_dataset,batch_size=mini_batch_size,shuffle=True,num_workers=1)
+         non_source_dataloader = DataLoader(class2_dataset,batch_size=mini_batch_size,shuffle=True,num_workers=1)
+    
+    
+         # target = source_target
+         target = torch.tensor(targets[i])
+    
+         perturbation = attack.generate_perturbation(source_dataloader, non_source_dataloader, target,itr=50,save_pi=f"./Pi_{models[i].__name__}_target={idx2label[targets[i]]}")
+    
+         perturbation = perturbation.cpu()
+    
+         # # save perturbation
+         image = toImage(perturbation)
+         image.save(f"perturbation_{models[i].__name__}_{idx2label[targets[i]]}.png")
+         torch.save(perturbation,f"perturbation_{models[i].__name__}_{idx2label[targets[i]]}.pt")
+
+
+
 if(__name__=="__main__"):
-    from PretrainedModels.imagenet import ModelOptions, get_pre_trained_model
-    from PretrainedModels.imagenet_data import ImageNetT2Dataset
-    from torch.utils.data import DataLoader
-    import torch
 
-    model, transform = get_pre_trained_model(ModelOptions.RESNET152)
+    attack_on_differnet_models()
 
-    train_dir = 'imagenette2/train'
+    # model, transform = get_pre_trained_model(ModelOptions.RESNET152)
 
-    class1_dataset = ImageNetT2Dataset(train_dir,transform=transform)
-    class2_dataset = ImageNetT2Dataset(train_dir,transform=transform)
+    # train_dir = 'imagenette2/train'
 
-    n=100
+    # class1_dataset = ImageNetT2Dataset(train_dir,transform=transform)
+    # class2_dataset = ImageNetT2Dataset(train_dir,transform=transform)
 
-    class1_dataset = torch.utils.data.Subset(class1_dataset,range(min(n,class1_dataset.__len__())))
-    class2_dataset = torch.utils.data.Subset(class2_dataset,range(min(n,class2_dataset.__len__())))
+    # n=100
 
-    print("class1:",len(class1_dataset))
-    print("class2:",len(class2_dataset))
+    # class1_dataset = torch.utils.data.Subset(class1_dataset,range(min(n,class1_dataset.__len__())))
+    # class2_dataset = torch.utils.data.Subset(class2_dataset,range(min(n,class2_dataset.__len__())))
 
-    mini_batch_size=20 #make even no.
-    # n samples from each class
+    # print("class1:",len(class1_dataset))
+    # print("class2:",len(class2_dataset))
 
-    source_dataloader = DataLoader(class1_dataset,batch_size=mini_batch_size,shuffle=True,num_workers=1)
-    non_source_dataloader = DataLoader(class2_dataset,batch_size=mini_batch_size,shuffle=True,num_workers=1)
+    # mini_batch_size=20 #make even no.
+    # # n samples from each class
+
+    # source_dataloader = DataLoader(class1_dataset,batch_size=mini_batch_size,shuffle=True,num_workers=1)
+    # non_source_dataloader = DataLoader(class2_dataset,batch_size=mini_batch_size,shuffle=True,num_workers=1)
 
 
-    attack = AdversarialAttack(model,mini_batch_size=mini_batch_size,fooling_ratio=1)
+    # attack = AdversarialAttack(model,mini_batch_size=mini_batch_size,fooling_ratio=1)
 
-    # target = source_target
-    target = torch.tensor(94)
+    # # target = source_target
+    # target = torch.tensor(94)
 
-    perturbation = attack.generate_perturbation(source_dataloader, non_source_dataloader, target,itr=150,save_pi="./Pi")
+    # perturbation = attack.generate_perturbation(source_dataloader, non_source_dataloader, target,itr=150,save_pi="./Pi")
 
-    perturbation = perturbation.cpu()
+    # perturbation = perturbation.cpu()
 
-    # perturbed_source_samples = source_samples - perturbation
-    # saveImages("perturbed_images",perturbed_source_samples,n)
-    # saveImages("actual_images",source_samples,n)
+    # # perturbed_source_samples = source_samples - perturbation
+    # # saveImages("perturbed_images",perturbed_source_samples,n)
+    # # saveImages("actual_images",source_samples,n)
 
 
-    # # save perturbation
-    image = toImage(perturbation)
-    image.save("perturbation.png")
-    # torch.save(perturbation,"perturbation.pt")
-
- 
+    # # # save perturbation
+    # image = toImage(perturbation)
+    # image.save("perturbation.png")
+    # # torch.save(perturbation,"perturbation.pt")

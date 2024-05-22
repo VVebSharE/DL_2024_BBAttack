@@ -13,10 +13,6 @@ ImageNett2ltoI={}
 for l in ImageNett2Labels:
     ImageNett2ltoI[l]=idx2label.index(l)
 
-
-
-
-
 class ImageNetT2Dataset(Dataset):
     def __init__(self, root_dir, transform=None, which_class:int|None=None, not_class:int|None=None):
         self.root_dir = root_dir

@@ -12,3 +12,9 @@ archive.zip
 /Pi
 /Perturbations
 /runs
+perturbation*.png
+perturbation*.pt
+/Pi*/
+*.ipynb
+*.pyc
+try2.ipynb
